@@ -30,6 +30,9 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.math.BigInteger;
+import org.json.JSONObject;
+import org.json.JSONException;
 
 import javax.inject.Inject;
 
@@ -50,6 +53,9 @@ public class Ble implements IBle, ITimerHandler {
     public final static UUID UUID_RSC_MEASUREMENT = UUID.fromString(BLESampleGattAttributes.RSC_MEASUREMENT);
     public final static UUID UUID_BATTERY_LEVEL = UUID.fromString(BLESampleGattAttributes.BATTERY_LEVEL);
     public final static UUID UUID_TEMPERATURE_MEASUREMENT = UUID.fromString(BLESampleGattAttributes.TEMPERATURE_MEASUREMENT);
+    public final static UUID UUID_LIGHT_MODE = UUID.fromString(BLESampleGattAttributes.LIGHT_MODE);
+    public final static UUID UUID_LIGHT_MODE_SERVICE = UUID.fromString(BLESampleGattAttributes.LIGHT_MODE_SERVICE);
+
 
     private final static int TIMEOUT_CONNECTGATT = 5 * 60 * 1000; // in ms
 
@@ -70,6 +76,7 @@ public class Ble implements IBle, ITimerHandler {
     private String _ble_address1 = "";
     private String _ble_address2 = "";
     private String _ble_address3 = "";
+    private int light_mode = 0;
 
     public Ble(Context context) {
         _context = context;
@@ -353,15 +360,61 @@ public class Ble implements IBle, ITimerHandler {
                 ///Log.d(TAG, "put " + display(gatt) + " into mGattsConnectionPending, size:" + mGattsConnectionPending.size());
 
                 try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                }
-            }
-            try {
-                Thread.sleep(5000);
-            } catch (InterruptedException e) {
-            }
-        }
+			Thread.sleep(500);
+		} catch (InterruptedException e) {
+		}
+	    }
+	    try {
+		    Thread.sleep(5000);
+	    } catch (InterruptedException e) {
+	    }
+	}
+    }
+
+    public void setLightMode(BluetoothGatt gatt, Boolean light_status) {
+	    int newMode = 0;
+	    String newModeString = "Off";
+	    String device = gatt.getDevice().getName().toString();
+	    if (device.equals("Flare RT")) {
+		//can at least customise between flare and ion
+		if (light_status) { newModeString="Day Flash"; }
+	    	try {
+		    JSONObject RT_JSON = new JSONObject(BLESampleGattAttributes.FLARE_RT_JSON);
+	    	    newMode = Integer.parseInt(RT_JSON.optString(newModeString).toString());
+		}
+	        catch (JSONException e) {
+		    Log.w(TAG, "Unable to load light JSON: "+e);
+	        }
+	    } else if (device.equals("ION 200 RT")||device.equals("ION PRO RT")) {
+		if (light_status) { newModeString="Day Flash"; }
+	    	try {
+	            JSONObject RT_JSON = new JSONObject(BLESampleGattAttributes.ION_PRO_RT_JSON);
+	    	    newMode = Integer.parseInt(RT_JSON.optString(newModeString).toString());
+		}
+	        catch (JSONException e) {
+		    Log.w(TAG, "Unable to load light JSON: "+e);
+	        }
+	    }
+	    else {
+		    return;
+	    }
+
+	    final BluetoothGattService gattService = gatt.getService(UUID_LIGHT_MODE_SERVICE);
+	    if (gattService == null) {
+		   Log.i(TAG, "LIGHT MODE SERVICE not found");
+		   return;
+	    }
+		    
+	    final BluetoothGattCharacteristic gattChar = gattService.getCharacteristic(UUID_LIGHT_MODE);
+	    if (gattChar == null) {
+		   Log.i(TAG, "LIGHT MODE not found");
+		   return;
+	    }
+	    if ((newMode==0)||(light_mode==0)) {
+		    Log.i(TAG, String.format("Setting light mode %d",newMode));
+		    gattChar.setValue(newMode, BluetoothGattCharacteristic.FORMAT_UINT8, 0);
+		    gatt.writeCharacteristic(gattChar);
+	    }
     }
 
     public void disconnectAllDevices() {
@@ -375,6 +428,7 @@ public class Ble implements IBle, ITimerHandler {
             BluetoothGatt gatt = iterator.next().getValue();
             Log.d(TAG, "disconnect" + display(gatt));
             if (gatt != null) {
+		setLightMode(gatt, false);
                 gatt.disconnect();
                 gatt.close();
                 //gatt = null;
@@ -588,6 +642,12 @@ public class Ble implements IBle, ITimerHandler {
             sensorData.setRunningCadence((int) cadence);
             _bus.post(sensorData);
 
+	} else if (UUID_LIGHT_MODE.equals(characteristic.getUuid())) {
+	    //store light address and mode
+            light_mode = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT8, 0);
+	    Log.d(TAG, String.format("recieved mode %d",light_mode));
+            BleSensorData sensorData = new BleSensorData(gatt.getDevice().getAddress());
+            _bus.post(sensorData);
         } else {
             // For all other profiles, writes the data formatted in HEX.
             final byte[] data = characteristic.getValue();
@@ -620,6 +680,9 @@ public class Ble implements IBle, ITimerHandler {
                 int charaProp = gattCharacteristic.getProperties();
                 if (debug) Log.i(TAG, display(gatt) + " displayGattServices characteristic: " +  display(gattCharacteristic) + " charaProp=" + charaProp);
                 if ((charaProp & BluetoothGattCharacteristic.PROPERTY_READ) > 0) {
+		    if (UUID_LIGHT_MODE.equals(gattCharacteristic.getUuid())) {
+			display(gattCharacteristic);
+		    }
 //                    if (gattCharacteristic.getUuid().toString().equals("00002a00-0000-1000-8000-00805f9b34fb") // device name
 //                            || gattCharacteristic.getUuid().toString().equals("00002a38-0000-1000-8000-00805f9b34fb") // Body Sensor Location
 //                     ) {
@@ -632,6 +695,7 @@ public class Ble implements IBle, ITimerHandler {
                         || UUID_RSC_MEASUREMENT.equals(gattCharacteristic.getUuid())
                         || UUID_BATTERY_LEVEL.equals(gattCharacteristic.getUuid())
                         || UUID_TEMPERATURE_MEASUREMENT.equals(gattCharacteristic.getUuid())
+			|| UUID_LIGHT_MODE.equals(gattCharacteristic.getUuid())
 
                 ) {
                     if ((charaProp & BluetoothGattCharacteristic.PROPERTY_NOTIFY) > 0) {
@@ -640,10 +704,11 @@ public class Ble implements IBle, ITimerHandler {
                 }
             }
         }
+	setLightMode(gatt, true);
         Log.d(TAG, "descriptorWriteQueue.size=" + descriptorWriteQueue.size());
         if (descriptorWriteQueue.size() > 0) {
             gatt.writeDescriptor(descriptorWriteQueue.element());
-        }
+	}
         allwrites = true;
     }
 
